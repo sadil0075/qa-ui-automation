@@ -20,19 +20,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: ${{ github.event.inputs.environment || 'stag' }}   # <-- lets the job read environment-scoped secrets
+    environment: ${{ github.event.inputs.environment || 'stag' }}
 
     steps:
-      # ────────────────────────────────────────────────
-      # Source code
+      # ───────────────────────────── code ─────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ────────────────────────────────────────────────
-      # VPN set-up
+      # ───────────────────────────── VPN ─────────────────────────────
       - name: Install WireGuard
         run: |
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y wireguard
 
       - name: Configure and start WireGuard
@@ -44,22 +42,21 @@ jobs:
         run: |
           sudo mkdir -p /etc/wireguard
 
-          # Build config without ever echoing secrets
+          # create the config without exposing secrets in logs
           printf '[Interface]\nPrivateKey = %s\nAddress = 10.0.0.10/24\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n' \
             "$WG_PRIVATE_KEY" "$WG_PUBLIC_KEY" "$WG_PRESHARED_KEY" "$WG_ENDPOINT" \
             | sudo tee /etc/wireguard/wg0.conf >/dev/null
 
           sudo chmod 600 /etc/wireguard/wg0.conf
-          sudo wg-quick --quiet up /etc/wireguard/wg0.conf   # "--quiet" prevents log masking
+          sudo wg-quick --quiet up /etc/wireguard/wg0.conf
           echo "✅ WireGuard up"
 
-      - name: Quick connectivity check
+      - name: Connectivity smoke-test
         run: |
           curl -s ifconfig.me || true
           ping -c 3 8.8.8.8 || true
 
-      # ────────────────────────────────────────────────
-      # Node / Playwright
+      # ───────────────────────────── Node / Playwright ─────────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -83,8 +80,7 @@ jobs:
             npx playwright test --project=${{ github.event.inputs.browser }}
           fi
 
-      # ────────────────────────────────────────────────
-      # Artifacts & summary
+      # ───────────────────────────── Artifacts & summary ─────────────────────────────
       - name: Upload HTML report
         if: always()
         uses: actions/upload-artifact@v4
@@ -115,8 +111,7 @@ jobs:
             echo "Artifacts: HTML report & raw results attached."
           } >>"$GITHUB_STEP_SUMMARY"
 
-      # ────────────────────────────────────────────────
-      # VPN teardown
+      # ───────────────────────────── VPN teardown ─────────────────────────────
       - name: Disconnect WireGuard
         if: always()
         run: |
