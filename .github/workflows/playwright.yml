@@ -6,16 +6,16 @@ on:
       environment:
         description: "Test environment"
         required: false
-        default: "Stag"
+        default: "stag" # Changed to lowercase to match your environment
         type: choice
         options:
-          - Stag
+          - stag
           #- preview
           #- production
       browser:
         description: "Browser to test"
         required: false
-        default: "Chromium"
+        default: "chromium"
         type: choice
         options:
           - chromium
@@ -27,6 +27,7 @@ jobs:
   test:
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'stag' }} # This is crucial for environment secrets
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,31 +38,25 @@ jobs:
           sudo apt-get install -y wireguard
 
       - name: Configure WireGuard VPN
-        env:
-          WG_PRIVATE_KEY: ${{ secrets.WG_PRIVATE_KEY }}
-          WG_PUBLIC_KEY: ${{ secrets.WG_PUBLIC_KEY }}
-          WG_PRESHARED_KEY: ${{ secrets.WG_PRESHARED_KEY }}
-          WG_ENDPOINT: ${{ secrets.WG_ENDPOINT }}
         run: |
-          # Create config file with environment variables
-          sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
-          [Interface]
-          PrivateKey = ${WG_PRIVATE_KEY}
-          Address = 10.0.0.10/24
-          DNS = 1.1.1.1
-
-          [Peer]
-          PublicKey = ${WG_PUBLIC_KEY}
-          PresharedKey = ${WG_PRESHARED_KEY}
-          AllowedIPs = 0.0.0.0/0, ::/0
-          Endpoint = ${WG_ENDPOINT}
-          PersistentKeepalive = 25
-          EOF
+          # Create config file line by line to avoid interpolation issues
+          sudo mkdir -p /etc/wireguard
+          echo "[Interface]" | sudo tee /etc/wireguard/wg0.conf
+          echo "PrivateKey = ${{ secrets.WG_PRIVATE_KEY }}" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "Address = 10.0.0.10/24" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "DNS = 1.1.1.1" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "[Peer]" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "PublicKey = ${{ secrets.WG_PUBLIC_KEY }}" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "PresharedKey = ${{ secrets.WG_PRESHARED_KEY }}" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "AllowedIPs = 0.0.0.0/0, ::/0" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "Endpoint = ${{ secrets.WG_ENDPOINT }}" | sudo tee -a /etc/wireguard/wg0.conf
+          echo "PersistentKeepalive = 25" | sudo tee -a /etc/wireguard/wg0.conf
 
           # Set proper permissions
           sudo chmod 600 /etc/wireguard/wg0.conf
 
-          # Debug: Check if config file is created properly (remove after testing)
+          # Debug: Check if config file is created properly
           echo "Config file content:"
           sudo cat /etc/wireguard/wg0.conf
 
@@ -126,7 +121,7 @@ jobs:
         if: always()
         run: |
           echo "## 🎭 Playwright Test Execution Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Environment**: ${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ github.event.inputs.environment || 'stag' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Browser**: ${{ github.event.inputs.browser || 'chromium' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Run Number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
