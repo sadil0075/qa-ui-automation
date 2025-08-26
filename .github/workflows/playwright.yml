@@ -1,0 +1,125 @@
+name: Playwright Tests with VPN
+
+on:
+  workflow_dispatch: # Manual trigger only
+    inputs:
+      environment:
+        description: "Test environment"
+        required: false
+        default: "Stag"
+        type: choice
+        options:
+          - Stag
+          #- preview
+          #- production
+      browser:
+        description: "Browser to test"
+        required: false
+        default: "Chromium"
+        type: choice
+        options:
+          - chromium
+          #- Firefox
+          #- Webkit
+          #- Edge
+
+jobs:
+  test:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install WireGuard
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wireguard
+
+      - name: Configure WireGuard VPN
+        run: |
+          # Write config file
+          cat <<EOF > wg0.conf
+          [Interface]
+          PrivateKey = ${{ secrets.WG_PRIVATE_KEY }}
+          Address = 10.0.0.10/24
+          DNS = 1.1.1.1
+
+          [Peer]
+          PublicKey = ${{ secrets.WG_PUBLIC_KEY }}
+          PresharedKey = ${{ secrets.WG_PRESHARED_KEY }}
+          AllowedIPs = 0.0.0.0/0, ::/0
+          Endpoint = ${{ secrets.WG_ENDPOINT }}
+          PersistentKeepalive = 25
+          EOF
+
+          sudo wg-quick up ./wg0.conf
+          sleep 10
+          echo "✅ VPN connected"
+
+      - name: Test VPN Connection
+        run: |
+          echo "Public IP (via VPN):"
+          curl -s ifconfig.me
+          echo ""
+          echo "Pinging Google DNS:"
+          ping -c 4 8.8.8.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: |
+          # Try npm ci first, fallback to npm install if sync issues occur
+          npm ci || (echo "Lock file out of sync, running npm install..." && npm install)
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright tests
+        run: |
+          if [ "${{ github.event.inputs.browser }}" = "all" ]; then
+            npx playwright test
+          else
+            npx playwright test --project=${{ github.event.inputs.browser }}
+          fi
+        env:
+          CI: true
+          TEST_ENV: ${{ github.event.inputs.environment }}
+
+      - name: Upload HTML Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-${{ github.event.inputs.browser || 'chromium' }}-${{ github.run_number }}
+          path: result/playwright-report/
+          retention-days: 30
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ github.event.inputs.browser || 'chromium' }}-${{ github.run_number }}
+          path: result/test-results/
+          retention-days: 30
+
+      - name: Test Results Summary
+        if: always()
+        run: |
+          echo "## 🎭 Playwright Test Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Browser**: ${{ github.event.inputs.browser || 'chromium' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run Number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "- **VPN**: ✅ Connected via WireGuard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 **Reports**: Download artifacts from this workflow run" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup VPN Connection
+        if: always()
+        run: |
+          sudo wg-quick down ./wg0.conf || echo "VPN already disconnected"
+          echo "🔒 VPN connection cleaned up"

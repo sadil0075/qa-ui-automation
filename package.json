@@ -1,0 +1,15 @@
+{
+  "name": "playwright-automation-framework",
+  "version": "1.54.1",
+  "description": "A test automation framework using Playwright with Page Object Model.",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "author": "Shekhar Adil",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.54.1",
+    "playwright": "^1.54.1"
+  }
+}
