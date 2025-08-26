@@ -44,7 +44,7 @@ jobs:
           WG_PRESHARED_KEY: ${{ secrets.WG_PRESHARED_KEY }}
           WG_ENDPOINT: ${{ secrets.WG_ENDPOINT }}
         run: |
-          # Create config file using environment variables to avoid masking issues
+          # Create config file using environment variables with proper escaping
           sudo mkdir -p /etc/wireguard
           cat > /tmp/wg0.conf << 'EOF'
           [Interface]
@@ -60,11 +60,11 @@ jobs:
           PersistentKeepalive = 25
           EOF
 
-          # Replace placeholders with actual values
-          sed -i "s/PRIVATE_KEY_PLACEHOLDER/${WG_PRIVATE_KEY}/g" /tmp/wg0.conf
-          sed -i "s/PUBLIC_KEY_PLACEHOLDER/${WG_PUBLIC_KEY}/g" /tmp/wg0.conf
-          sed -i "s/PRESHARED_KEY_PLACEHOLDER/${WG_PRESHARED_KEY}/g" /tmp/wg0.conf
-          sed -i "s/ENDPOINT_PLACEHOLDER/${WG_ENDPOINT}/g" /tmp/wg0.conf
+          # Replace placeholders with actual values using a different delimiter
+          sed -i "s|PRIVATE_KEY_PLACEHOLDER|${WG_PRIVATE_KEY}|g" /tmp/wg0.conf
+          sed -i "s|PUBLIC_KEY_PLACEHOLDER|${WG_PUBLIC_KEY}|g" /tmp/wg0.conf
+          sed -i "s|PRESHARED_KEY_PLACEHOLDER|${WG_PRESHARED_KEY}|g" /tmp/wg0.conf
+          sed -i "s|ENDPOINT_PLACEHOLDER|${WG_ENDPOINT}|g" /tmp/wg0.conf
 
           # Move to proper location and set permissions
           sudo mv /tmp/wg0.conf /etc/wireguard/wg0.conf
