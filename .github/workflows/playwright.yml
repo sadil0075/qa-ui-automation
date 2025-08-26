@@ -44,30 +44,17 @@ jobs:
           WG_PRESHARED_KEY: ${{ secrets.WG_PRESHARED_KEY }}
           WG_ENDPOINT: ${{ secrets.WG_ENDPOINT }}
         run: |
-          # Create config file using environment variables with proper escaping
+          # Create config file using printf to avoid masking issues
           sudo mkdir -p /etc/wireguard
-          cat > /tmp/wg0.conf << 'EOF'
-          [Interface]
-          PrivateKey = PRIVATE_KEY_PLACEHOLDER
-          Address = 10.0.0.10/24
-          DNS = 1.1.1.1
 
-          [Peer]
-          PublicKey = PUBLIC_KEY_PLACEHOLDER
-          PresharedKey = PRESHARED_KEY_PLACEHOLDER
-          AllowedIPs = 0.0.0.0/0, ::/0
-          Endpoint = ENDPOINT_PLACEHOLDER
-          PersistentKeepalive = 25
-          EOF
+          # Use printf with environment variables to bypass GitHub masking
+          printf "[Interface]\nPrivateKey = %s\nAddress = 10.0.0.10/24\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n" \
+            "$WG_PRIVATE_KEY" \
+            "$WG_PUBLIC_KEY" \
+            "$WG_PRESHARED_KEY" \
+            "$WG_ENDPOINT" | sudo tee /etc/wireguard/wg0.conf > /dev/null
 
-          # Replace placeholders with actual values using a different delimiter
-          sed -i "s|PRIVATE_KEY_PLACEHOLDER|${WG_PRIVATE_KEY}|g" /tmp/wg0.conf
-          sed -i "s|PUBLIC_KEY_PLACEHOLDER|${WG_PUBLIC_KEY}|g" /tmp/wg0.conf
-          sed -i "s|PRESHARED_KEY_PLACEHOLDER|${WG_PRESHARED_KEY}|g" /tmp/wg0.conf
-          sed -i "s|ENDPOINT_PLACEHOLDER|${WG_ENDPOINT}|g" /tmp/wg0.conf
-
-          # Move to proper location and set permissions
-          sudo mv /tmp/wg0.conf /etc/wireguard/wg0.conf
+          # Set proper permissions
           sudo chmod 600 /etc/wireguard/wg0.conf
 
           # Bring up the VPN
