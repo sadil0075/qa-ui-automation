@@ -38,8 +38,8 @@ jobs:
 
       - name: Configure WireGuard VPN
         run: |
-          # Write config file
-          cat <<EOF > wg0.conf
+          # Create config file with proper permissions
+          sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
           [Interface]
           PrivateKey = ${{ secrets.WG_PRIVATE_KEY }}
           Address = 10.0.0.10/24
@@ -53,12 +53,19 @@ jobs:
           PersistentKeepalive = 25
           EOF
 
-          sudo wg-quick up ./wg0.conf
+          # Set proper permissions
+          sudo chmod 600 /etc/wireguard/wg0.conf
+
+          # Bring up the VPN
+          sudo wg-quick up wg0
           sleep 10
           echo "✅ VPN connected"
 
       - name: Test VPN Connection
         run: |
+          echo "WireGuard Status:"
+          sudo wg show
+          echo ""
           echo "Public IP (via VPN):"
           curl -s ifconfig.me
           echo ""
@@ -121,5 +128,6 @@ jobs:
       - name: Cleanup VPN Connection
         if: always()
         run: |
-          sudo wg-quick down ./wg0.conf || echo "VPN already disconnected"
+          sudo wg-quick down wg0 || echo "VPN already disconnected"
+          sudo rm -f /etc/wireguard/wg0.conf
           echo "🔒 VPN connection cleaned up"
