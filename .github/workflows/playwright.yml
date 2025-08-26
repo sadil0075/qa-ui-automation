@@ -37,24 +37,33 @@ jobs:
           sudo apt-get install -y wireguard
 
       - name: Configure WireGuard VPN
+        env:
+          WG_PRIVATE_KEY: ${{ secrets.WG_PRIVATE_KEY }}
+          WG_PUBLIC_KEY: ${{ secrets.WG_PUBLIC_KEY }}
+          WG_PRESHARED_KEY: ${{ secrets.WG_PRESHARED_KEY }}
+          WG_ENDPOINT: ${{ secrets.WG_ENDPOINT }}
         run: |
-          # Create config file with proper permissions
+          # Create config file with environment variables
           sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
           [Interface]
-          PrivateKey = ${{ secrets.WG_PRIVATE_KEY }}
+          PrivateKey = ${WG_PRIVATE_KEY}
           Address = 10.0.0.10/24
           DNS = 1.1.1.1
 
           [Peer]
-          PublicKey = ${{ secrets.WG_PUBLIC_KEY }}
-          PresharedKey = ${{ secrets.WG_PRESHARED_KEY }}
+          PublicKey = ${WG_PUBLIC_KEY}
+          PresharedKey = ${WG_PRESHARED_KEY}
           AllowedIPs = 0.0.0.0/0, ::/0
-          Endpoint = ${{ secrets.WG_ENDPOINT }}
+          Endpoint = ${WG_ENDPOINT}
           PersistentKeepalive = 25
           EOF
 
           # Set proper permissions
           sudo chmod 600 /etc/wireguard/wg0.conf
+
+          # Debug: Check if config file is created properly (remove after testing)
+          echo "Config file content:"
+          sudo cat /etc/wireguard/wg0.conf
 
           # Bring up the VPN
           sudo wg-quick up wg0
