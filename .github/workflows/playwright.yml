@@ -1,147 +1,89 @@
-name: Playwright Tests with VPN
+name: Playwright + VPN
 
 on:
-  workflow_dispatch: # Manual trigger only
+  # Manual-run trigger (shows dropdown)
+  workflow_dispatch:
     inputs:
       environment:
-        description: "Test environment"
+        description: "Target environment"
         required: false
+        type: choice
         default: "stag"
-        type: choice
-        options:
-          - stag
-          #- preview
-          #- production
+        options: [stag]
       browser:
-        description: "Browser to test"
+        description: "Playwright project"
         required: false
-        default: "chromium"
         type: choice
-        options:
-          - chromium
-          #- Firefox
-          #- Webkit
-          #- Edge
+        default: "chromium"
+        options: [chromium]
 
 jobs:
   test:
-    timeout-minutes: 60
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: ${{ github.event.inputs.environment || 'stag' }}
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    # ───────── source ─────────
+    - uses: actions/checkout@v4
 
-      - name: Install WireGuard
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wireguard
+    # ───────── VPN ─────────
+    - name: Install WireGuard
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y wireguard
 
-      - name: Configure WireGuard VPN
-        env:
-          WG_PRIVATE_KEY: ${{ secrets.WG_PRIVATE_KEY }}
-          WG_PUBLIC_KEY: ${{ secrets.WG_PUBLIC_KEY }}
-          WG_PRESHARED_KEY: ${{ secrets.WG_PRESHARED_KEY }}
-          WG_ENDPOINT: ${{ secrets.WG_ENDPOINT }}
-        run: |
-          # Create config file using environment variables with proper escaping
-          sudo mkdir -p /etc/wireguard
-          cat > /tmp/wg0.conf << 'EOF'
-          [Interface]
-          PrivateKey = PRIVATE_KEY_PLACEHOLDER
-          Address = 10.0.0.10/24
-          DNS = 1.1.1.1
+    - name: Start WireGuard
+      env:
+        WG_PRIVATE_KEY:  ${{ secrets.WG_PRIVATE_KEY }}
+        WG_PUBLIC_KEY:   ${{ secrets.WG_PUBLIC_KEY }}
+        WG_PRESHARED_KEY:${{ secrets.WG_PRESHARED_KEY }}
+        WG_ENDPOINT:     ${{ secrets.WG_ENDPOINT }}
+      run: |
+        sudo mkdir -p /etc/wireguard
+        printf '[Interface]\nPrivateKey = %s\nAddress = 10.0.0.10/24\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n' \
+          "$WG_PRIVATE_KEY" "$WG_PUBLIC_KEY" "$WG_PRESHARED_KEY" "$WG_ENDPOINT" \
+          | sudo tee /etc/wireguard/wg0.conf >/dev/null
+        sudo chmod 600 /etc/wireguard/wg0.conf
+        sudo wg-quick --quiet up /etc/wireguard/wg0.conf
+        echo "✅ VPN up"
 
-          [Peer]
-          PublicKey = PUBLIC_KEY_PLACEHOLDER
-          PresharedKey = PRESHARED_KEY_PLACEHOLDER
-          AllowedIPs = 0.0.0.0/0, ::/0
-          Endpoint = ENDPOINT_PLACEHOLDER
-          PersistentKeepalive = 25
-          EOF
+    # ───────── Node / Playwright ─────────
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "lts/*"
+        cache: npm
 
-          # Replace placeholders with actual values using a different delimiter
-          sed -i "s|PRIVATE_KEY_PLACEHOLDER|${WG_PRIVATE_KEY}|g" /tmp/wg0.conf
-          sed -i "s|PUBLIC_KEY_PLACEHOLDER|${WG_PUBLIC_KEY}|g" /tmp/wg0.conf
-          sed -i "s|PRESHARED_KEY_PLACEHOLDER|${WG_PRESHARED_KEY}|g" /tmp/wg0.conf
-          sed -i "s|ENDPOINT_PLACEHOLDER|${WG_ENDPOINT}|g" /tmp/wg0.conf
+    - run: npm ci || npm install
+      name: Install dependencies
 
-          # Move to proper location and set permissions
-          sudo mv /tmp/wg0.conf /etc/wireguard/wg0.conf
-          sudo chmod 600 /etc/wireguard/wg0.conf
+    - run: npx playwright install --with-deps
+      name: Install Playwright browsers
 
-          # Bring up the VPN
-          sudo wg-quick up wg0
-          sleep 10
-          echo "✅ VPN connected"
+    - name: Run tests
+      env:
+        CI: true
+        TEST_ENV: ${{ github.event.inputs.environment }}
+      run: |
+        if [ "${{ github.event.inputs.browser }}" = "all" ]; then
+          npx playwright test
+        else
+          npx playwright test --project=${{ github.event.inputs.browser }}
+        fi
 
-      - name: Test VPN Connection
-        run: |
-          echo "WireGuard Status:"
-          sudo wg show
-          echo ""
-          echo "Public IP (via VPN):"
-          curl -s ifconfig.me
-          echo ""
-          echo "Pinging Google DNS:"
-          ping -c 4 8.8.8.8
+    # ───────── Artifacts ─────────
+    - name: Upload HTML report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: report-${{ github.run_number }}
+        path: result/playwright-report
+        retention-days: 30
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "lts/*"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: |
-          # Try npm ci first, fallback to npm install if sync issues occur
-          npm ci || (echo "Lock file out of sync, running npm install..." && npm install)
-
-      - name: Install Playwright Browsers
-        run: npx playwright install --with-deps
-
-      - name: Run Playwright tests
-        run: |
-          if [ "${{ github.event.inputs.browser }}" = "all" ]; then
-            npx playwright test
-          else
-            npx playwright test --project=${{ github.event.inputs.browser }}
-          fi
-        env:
-          CI: true
-          TEST_ENV: ${{ github.event.inputs.environment }}
-
-      - name: Upload HTML Report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: playwright-report-${{ github.event.inputs.browser || 'chromium' }}-${{ github.run_number }}
-          path: result/playwright-report/
-          retention-days: 30
-
-      - name: Upload Test Results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results-${{ github.event.inputs.browser || 'chromium' }}-${{ github.run_number }}
-          path: result/test-results/
-          retention-days: 30
-
-      - name: Test Results Summary
-        if: always()
-        run: |
-          echo "## 🎭 Playwright Test Execution Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Environment**: ${{ github.event.inputs.environment || 'stag' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Browser**: ${{ github.event.inputs.browser || 'chromium' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Run Number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "- **VPN**: ✅ Connected via WireGuard" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📊 **Reports**: Download artifacts from this workflow run" >> $GITHUB_STEP_SUMMARY
-
-      - name: Cleanup VPN Connection
-        if: always()
-        run: |
-          sudo wg-quick down wg0 || echo "VPN already disconnected"
-          sudo rm -f /etc/wireguard/wg0.conf
-          echo "🔒 VPN connection cleaned up"
+    # ───────── Teardown ─────────
+    - name: Disconnect WireGuard
+      if: always()
+      run: |
+        sudo wg-quick down /etc/wireguard/wg0.conf || true
+        sudo rm -f /etc/wireguard/wg0.conf
+        echo "🔒 VPN down"
