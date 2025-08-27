@@ -33,7 +33,6 @@ jobs:
         run: |
           echo "=== Setting up WireGuard VPN ==="
 
-          # Create WireGuard configuration with optimized settings
           sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
           [Interface]
           PrivateKey = ${WG_PRIVATE_KEY}
@@ -49,34 +48,10 @@ jobs:
           Endpoint = vpn.juliusworks.com:33048
           EOF
 
-          # Set proper permissions
           sudo chmod 600 /etc/wireguard/wg0.conf
-
-          # Enable IP forwarding
-          echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
-          echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.conf
-          sudo sysctl -p
-
-          echo "=== Starting WireGuard interface ==="
-          # Start WireGuard interface
           sudo wg-quick up wg0
-
-          # Wait for interface to be fully up
           sleep 10
 
-          echo "=== Testing target application connectivity ==="
-          for i in {1..5}; do
-            echo "Attempt $i: Testing app connectivity..."
-            if curl -I --connect-timeout 10 --max-time 20 https://app.juliusdev.net/login; then
-              echo "✓ Application connectivity successful"
-              break
-            else
-              echo "✗ Application connectivity failed, retrying..."
-              sleep 10
-            fi
-          done
-
-          # Final verification
           curl -v --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
             echo "❌ CRITICAL: Cannot reach target application"
             exit 1
@@ -95,30 +70,17 @@ jobs:
 
       - name: Install Playwright browsers with system dependencies
         run: |
-          # Install browsers with all system dependencies
           npx playwright install --with-deps chromium
-
-          # Verify browser installation
           npx playwright --version
 
       - name: Configure system for browser stability
         run: |
-          # Increase shared memory for browser stability
           sudo mount -o remount,size=2G /dev/shm
-
-          # Set memory limits
-          echo "Setting up memory management..."
           sudo sysctl -w vm.swappiness=10
           sudo sysctl -w vm.overcommit_memory=1
 
-          # Show available resources
-          echo "=== System Resources ==="
-          free -h
-          df -h
-
       - name: Create optimized Playwright config for CI
         run: |
-          # Create a CI-specific config file using Playwright's default directories
           cat > playwright.ci.config.js << 'EOF'
           const { defineConfig, devices } = require('@playwright/test');
 
@@ -127,23 +89,22 @@ jobs:
             fullyParallel: false,
             forbidOnly: !!process.env.CI,
             retries: 2,
-            workers: 1, // Single worker to avoid resource conflicts
+            workers: 1,
             reporter: [
               ['list'], 
-              ['html', { open: 'never' }]  // Uses default 'playwright-report' directory
+              ['html', { open: 'never' }]
             ],
-            // Use default 'test-results' directory for test artifacts
-            timeout: 120000, // 2 minutes per test
+            timeout: 120000,
             expect: {
-              timeout: 20000 // 20 seconds for assertions
+              timeout: 20000
             },
             use: {
               baseURL: 'https://app.juliusdev.net',
               trace: 'retain-on-failure',
               video: 'retain-on-failure',
               screenshot: 'only-on-failure',
-              navigationTimeout: 60000, // 60 seconds for navigation
-              actionTimeout: 30000, // 30 seconds for actions
+              navigationTimeout: 60000,
+              actionTimeout: 30000,
             },
             projects: [
               {
@@ -151,7 +112,6 @@ jobs:
                 use: {
                   ...devices['Desktop Chrome'],
                   launchOptions: {
-                    // Optimized browser flags for CI
                     args: [
                       '--no-sandbox',
                       '--disable-setuid-sandbox',
@@ -167,25 +127,14 @@ jobs:
                       '--memory-pressure-off',
                       '--max_old_space_size=4096'
                     ],
-                    // Ensure browser doesn't timeout
                     timeout: 60000,
                   },
-                  // Use a larger viewport for stability
                   viewport: { width: 1280, height: 720 },
                 }
               }
             ]
           });
           EOF
-
-      - name: Final pre-test connectivity check
-        run: |
-          echo "=== Final connectivity verification before tests ==="
-          curl -I --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
-            echo "❌ FINAL CHECK FAILED: Cannot reach application"
-            exit 1
-          }
-          echo "✅ All connectivity checks passed"
 
       - name: Run Playwright tests with stability optimizations
         env:
@@ -194,15 +143,8 @@ jobs:
           PWDEBUG: 0
         run: |
           echo "Running tests against $TEST_ENV environment with CI optimizations"
-
-          # Set process limits
           ulimit -n 8192
-
-          # Run tests with the CI config
-          npx playwright test --config=playwright.ci.config.js \
-            --reporter=list \
-            --max-failures=1 \
-            --timeout=120000
+          npx playwright test --config=playwright.ci.config.js --reporter=list --max-failures=1 --timeout=120000
         continue-on-error: false
 
       - name: Check test result directories
@@ -211,36 +153,23 @@ jobs:
           echo "=== Checking for test result directories ==="
           pwd
           ls -la
-          echo "--- Looking for playwright-report ---"
-          ls -la playwright-report/ || echo "playwright-report directory not found"
-          echo "--- Looking for test-results ---"  
-          ls -la test-results/ || echo "test-results directory not found"
-          echo "--- Looking for any result directories ---"
-          find . -name "*result*" -o -name "*report*" | head -10
+          echo "--- All directories and files ---"
+          find . -type d -name "*report*" -o -type d -name "*result*" | head -10
+          echo "--- Checking specific paths ---"
+          ls -la result/playwright-report/ 2>/dev/null && echo "✅ result/playwright-report/ exists" || echo "❌ result/playwright-report/ not found"
+          ls -la result/test-results/ 2>/dev/null && echo "✅ result/test-results/ exists" || echo "❌ result/test-results/ not found"
+          ls -la playwright-report/ 2>/dev/null && echo "✅ playwright-report/ exists" || echo "❌ playwright-report/ not found"
+          ls -la test-results/ 2>/dev/null && echo "✅ test-results/ exists" || echo "❌ test-results/ not found"
 
-      - name: Upload test results
+      - name: Upload test results (correct paths)
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: playwright-results-${{ github.event.inputs.environment }}
           path: |
-            playwright-report/
-            test-results/
+            result/playwright-report/
+            result/test-results/
           retention-days: 7
-
-      - name: Debug info on failure
-        if: failure()
-        run: |
-          echo "=== Debug info for failed run ==="
-          # System resources
-          free -h
-          df -h /dev/shm
-
-          # Process info
-          ps aux | grep chrome || echo "No chrome processes found"
-
-          # VPN status
-          sudo wg show
 
       - name: Cleanup WireGuard
         if: always()
