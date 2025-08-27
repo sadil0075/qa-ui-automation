@@ -10,7 +10,8 @@ on:
         type: choice
         options:
           - stag
-          - preview
+          - prod
+          - dev
 
 jobs:
   playwright-tests:
@@ -63,40 +64,6 @@ jobs:
           # Wait for interface to be fully up
           sleep 10
 
-          echo "=== Verifying WireGuard status ==="
-          sudo wg show
-
-          # Check if interface is properly configured
-          ip addr show wg0
-
-          echo "=== Checking routing table ==="
-          ip route show
-
-          echo "=== Testing basic connectivity ==="
-          # Test basic internet connectivity through VPN
-          for i in {1..5}; do
-            echo "Attempt $i: Testing connectivity..."
-            if ping -c 2 -W 3 1.1.1.1; then
-              echo "✓ Basic connectivity successful"
-              break
-            else
-              echo "✗ Basic connectivity failed, retrying..."
-              sleep 5
-            fi
-          done
-
-          echo "=== Testing DNS resolution ==="
-          for i in {1..3}; do
-            echo "Attempt $i: Testing DNS..."
-            if nslookup app.juliusdev.net 1.1.1.1; then
-              echo "✓ DNS resolution successful"
-              break
-            else
-              echo "✗ DNS resolution failed, retrying..."
-              sleep 5
-            fi
-          done
-
           echo "=== Testing target application connectivity ==="
           for i in {1..5}; do
             echo "Attempt $i: Testing app connectivity..."
@@ -109,14 +76,9 @@ jobs:
             fi
           done
 
-          # Additional verification
-          echo "=== Final connectivity verification ==="
+          # Final verification
           curl -v --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
             echo "❌ CRITICAL: Cannot reach target application"
-            echo "=== Network debugging info ==="
-            ip route get 1.1.1.1
-            dig app.juliusdev.net
-            sudo wg show
             exit 1
           }
 
@@ -153,11 +115,10 @@ jobs:
           echo "=== System Resources ==="
           free -h
           df -h
-          lscpu | grep -E "CPU\(s\)|Model name"
 
       - name: Create optimized Playwright config for CI
         run: |
-          # Create a CI-specific config file
+          # Create a CI-specific config file using Playwright's default directories
           cat > playwright.ci.config.js << 'EOF'
           const { defineConfig, devices } = require('@playwright/test');
 
@@ -167,8 +128,11 @@ jobs:
             forbidOnly: !!process.env.CI,
             retries: 2,
             workers: 1, // Single worker to avoid resource conflicts
-            reporter: [['list'], ['html', { outputFolder: 'result/playwright-report' }]],
-            outputDir: 'result/test-results',
+            reporter: [
+              ['list'], 
+              ['html', { open: 'never' }]  // Uses default 'playwright-report' directory
+            ],
+            // Use default 'test-results' directory for test artifacts
             timeout: 120000, // 2 minutes per test
             expect: {
               timeout: 20000 // 20 seconds for assertions
@@ -217,17 +181,10 @@ jobs:
       - name: Final pre-test connectivity check
         run: |
           echo "=== Final connectivity verification before tests ==="
-          echo "Testing basic connectivity..."
-          ping -c 3 1.1.1.1 || echo "Basic ping failed"
-
-          echo "Testing application endpoint..."
           curl -I --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
             echo "❌ FINAL CHECK FAILED: Cannot reach application"
-            sudo wg show
-            ip route show
             exit 1
           }
-
           echo "✅ All connectivity checks passed"
 
       - name: Run Playwright tests with stability optimizations
@@ -248,14 +205,27 @@ jobs:
             --timeout=120000
         continue-on-error: false
 
+      - name: Check test result directories
+        if: always()
+        run: |
+          echo "=== Checking for test result directories ==="
+          pwd
+          ls -la
+          echo "--- Looking for playwright-report ---"
+          ls -la playwright-report/ || echo "playwright-report directory not found"
+          echo "--- Looking for test-results ---"  
+          ls -la test-results/ || echo "test-results directory not found"
+          echo "--- Looking for any result directories ---"
+          find . -name "*result*" -o -name "*report*" | head -10
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: playwright-results-${{ github.event.inputs.environment }}
           path: |
-            result/playwright-report/
-            result/test-results/
+            playwright-report/
+            test-results/
           retention-days: 7
 
       - name: Debug info on failure
@@ -271,15 +241,6 @@ jobs:
 
           # VPN status
           sudo wg show
-
-          # Recent system logs
-          sudo dmesg | tail -20 || echo "Could not read dmesg"
-
-          # Check if result directories exist
-          echo "=== Checking result directories ==="
-          ls -la result/ || echo "Result directory not found"
-          ls -la result/playwright-report/ || echo "Playwright report directory not found"
-          ls -la result/test-results/ || echo "Test results directory not found"
 
       - name: Cleanup WireGuard
         if: always()
