@@ -21,22 +21,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install WireGuard
+      - name: Install WireGuard and dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wireguard-tools resolvconf
+          sudo apt-get install -y wireguard-tools resolvconf iptables dnsutils curl
 
-      - name: Setup WireGuard VPN
+      - name: Setup WireGuard VPN with enhanced configuration
         env:
           WG_PRIVATE_KEY: ${{ secrets.WG_PRIVATE_KEY }}
           WG_PRESHARED_KEY: ${{ secrets.WG_PRESHARED_KEY }}
         run: |
-          # Create WireGuard configuration
+          echo "=== Setting up WireGuard VPN ==="
+
+          # Create WireGuard configuration with optimized settings
           sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
           [Interface]
           PrivateKey = ${WG_PRIVATE_KEY}
           Address = 10.0.0.10/24
-          DNS = 1.1.1.1
+          DNS = 1.1.1.1, 8.8.8.8
+          MTU = 1420
 
           [Peer]
           PublicKey = DdlxB8CIQ72tZ6bWe3NU/ZC50SKIqKgmiHusPM4liAI=
@@ -49,43 +52,76 @@ jobs:
           # Set proper permissions
           sudo chmod 600 /etc/wireguard/wg0.conf
 
+          # Enable IP forwarding
+          echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
+          echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p
+
+          echo "=== Starting WireGuard interface ==="
           # Start WireGuard interface
-          echo "Starting WireGuard interface..."
           sudo wg-quick up wg0
 
           # Wait for interface to be fully up
-          sleep 5
+          sleep 10
 
-          # Verify WireGuard status
-          echo "WireGuard status:"
+          echo "=== Verifying WireGuard status ==="
           sudo wg show
 
-          # Check interface is up
-          echo "Network interfaces:"
+          # Check if interface is properly configured
           ip addr show wg0
 
-          # Check routing table
-          echo "Routing table:"
+          echo "=== Checking routing table ==="
           ip route show
 
-          # Test basic connectivity
-          echo "Testing basic connectivity..."
-          ping -c 3 -W 5 1.1.1.1 || echo "Basic ping failed"
+          echo "=== Testing basic connectivity ==="
+          # Test basic internet connectivity through VPN
+          for i in {1..5}; do
+            echo "Attempt $i: Testing connectivity..."
+            if ping -c 2 -W 3 1.1.1.1; then
+              echo "✓ Basic connectivity successful"
+              break
+            else
+              echo "✗ Basic connectivity failed, retrying..."
+              sleep 5
+            fi
+          done
 
-          # Test VPN endpoint connectivity
-          echo "Testing VPN endpoint connectivity..."
-          ping -c 3 -W 5 vpn.juliusworks.com || echo "VPN endpoint ping failed"
+          echo "=== Testing DNS resolution ==="
+          for i in {1..3}; do
+            echo "Attempt $i: Testing DNS..."
+            if nslookup app.juliusdev.net 1.1.1.1; then
+              echo "✓ DNS resolution successful"
+              break
+            else
+              echo "✗ DNS resolution failed, retrying..."
+              sleep 5
+            fi
+          done
 
-          # Test DNS resolution through VPN
-          echo "Testing DNS resolution..."
-          nslookup app.juliusdev.net || echo "DNS resolution failed"
+          echo "=== Testing target application connectivity ==="
+          for i in {1..5}; do
+            echo "Attempt $i: Testing app connectivity..."
+            if curl -I --connect-timeout 10 --max-time 20 https://app.juliusdev.net/login; then
+              echo "✓ Application connectivity successful"
+              break
+            else
+              echo "✗ Application connectivity failed, retrying..."
+              sleep 10
+            fi
+          done
 
-          # Test target application connectivity
-          echo "Testing target application connectivity..."
-          curl -I --connect-timeout 10 --max-time 15 https://app.juliusdev.net/login || echo "Target app connection failed"
+          # Additional verification
+          echo "=== Final connectivity verification ==="
+          curl -v --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
+            echo "❌ CRITICAL: Cannot reach target application"
+            echo "=== Network debugging info ==="
+            ip route get 1.1.1.1
+            dig app.juliusdev.net
+            sudo wg show
+            exit 1
+          }
 
-          # Wait a bit more to ensure everything is stabilized
-          sleep 10
+          echo "✅ VPN setup completed successfully"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -99,17 +135,60 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: Verify network connectivity before tests
+      - name: Configure Playwright for VPN environment
         run: |
-          echo "Final connectivity check before tests..."
-          curl -v --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || echo "Pre-test connectivity failed"
+          # Create playwright config override for VPN environment
+          cat >> playwright.config.js << 'EOF'
+          // VPN environment overrides
+          module.exports = {
+            ...require('./playwright.config.js'),
+            timeout: 90000, // 90 seconds
+            expect: {
+              timeout: 15000 // 15 seconds for assertions
+            },
+            use: {
+              ...require('./playwright.config.js').use,
+              navigationTimeout: 60000, // 60 seconds for navigation
+              actionTimeout: 30000, // 30 seconds for actions
+            },
+            projects: [
+              {
+                name: 'chromium',
+                use: {
+                  ...devices['Desktop Chrome'],
+                  launchOptions: {
+                    args: ['--disable-web-security', '--disable-features=VizDisplayCompositor']
+                  }
+                }
+              }
+            ]
+          };
+          EOF
+
+      - name: Final pre-test connectivity check
+        run: |
+          echo "=== Final connectivity verification before tests ==="
+          echo "Testing basic connectivity..."
+          ping -c 3 1.1.1.1 || echo "Basic ping failed"
+
+          echo "Testing application endpoint..."
+          curl -I --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
+            echo "❌ FINAL CHECK FAILED: Cannot reach application"
+            sudo wg show
+            ip route show
+            exit 1
+          }
+
+          echo "✅ All connectivity checks passed"
 
       - name: Run Playwright tests
         env:
           TEST_ENV: ${{ github.event.inputs.environment }}
+          PWDEBUG: 0
         run: |
           echo "Running tests against $TEST_ENV environment"
-          npx playwright test --project=chromium --timeout=60000
+          echo "Using extended timeouts for VPN environment"
+          npx playwright test --project=chromium --timeout=90000 --reporter=list
         continue-on-error: false
 
       - name: Upload test results
@@ -122,6 +201,15 @@ jobs:
             test-results/
             result/
           retention-days: 7
+
+      - name: Debug info on failure
+        if: failure()
+        run: |
+          echo "=== Debug info for failed run ==="
+          sudo wg show
+          ip route show
+          ip addr show wg0
+          curl -v https://app.juliusdev.net/login || echo "Curl test failed"
 
       - name: Cleanup WireGuard
         if: always()
