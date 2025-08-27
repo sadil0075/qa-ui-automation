@@ -24,7 +24,7 @@ jobs:
       - name: Install WireGuard
         run: |
           sudo apt-get update
-          sudo apt-get install -y wireguard-tools
+          sudo apt-get install -y wireguard-tools resolvconf
 
       - name: Setup WireGuard VPN
         env:
@@ -50,15 +50,42 @@ jobs:
           sudo chmod 600 /etc/wireguard/wg0.conf
 
           # Start WireGuard interface
+          echo "Starting WireGuard interface..."
           sudo wg-quick up wg0
 
-          # Verify connection
+          # Wait for interface to be fully up
+          sleep 5
+
+          # Verify WireGuard status
           echo "WireGuard status:"
           sudo wg show
 
-          # Test connectivity
-          echo "Testing VPN connectivity..."
-          ping -c 3 1.1.1.1 || echo "Ping test failed"
+          # Check interface is up
+          echo "Network interfaces:"
+          ip addr show wg0
+
+          # Check routing table
+          echo "Routing table:"
+          ip route show
+
+          # Test basic connectivity
+          echo "Testing basic connectivity..."
+          ping -c 3 -W 5 1.1.1.1 || echo "Basic ping failed"
+
+          # Test VPN endpoint connectivity
+          echo "Testing VPN endpoint connectivity..."
+          ping -c 3 -W 5 vpn.juliusworks.com || echo "VPN endpoint ping failed"
+
+          # Test DNS resolution through VPN
+          echo "Testing DNS resolution..."
+          nslookup app.juliusdev.net || echo "DNS resolution failed"
+
+          # Test target application connectivity
+          echo "Testing target application connectivity..."
+          curl -I --connect-timeout 10 --max-time 15 https://app.juliusdev.net/login || echo "Target app connection failed"
+
+          # Wait a bit more to ensure everything is stabilized
+          sleep 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -72,12 +99,17 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
+      - name: Verify network connectivity before tests
+        run: |
+          echo "Final connectivity check before tests..."
+          curl -v --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || echo "Pre-test connectivity failed"
+
       - name: Run Playwright tests
         env:
           TEST_ENV: ${{ github.event.inputs.environment }}
         run: |
           echo "Running tests against $TEST_ENV environment"
-          npx playwright test --project=chromium
+          npx playwright test --project=chromium --timeout=60000
         continue-on-error: false
 
       - name: Upload test results
@@ -88,9 +120,11 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            result/
           retention-days: 7
 
       - name: Cleanup WireGuard
         if: always()
         run: |
+          echo "Cleaning up WireGuard connection..."
           sudo wg-quick down wg0 || echo "WireGuard interface already down"
