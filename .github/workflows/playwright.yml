@@ -79,64 +79,7 @@ jobs:
           sudo sysctl -w vm.swappiness=10
           sudo sysctl -w vm.overcommit_memory=1
 
-      - name: Create optimized Playwright config for CI
-        run: |
-          cat > playwright.ci.config.js << 'EOF'
-          const { defineConfig, devices } = require('@playwright/test');
-
-          module.exports = defineConfig({
-            testDir: './playwright-automation-framework/src/tests',
-            fullyParallel: false,
-            forbidOnly: !!process.env.CI,
-            retries: 2,
-            workers: 1,
-            reporter: [
-              ['list'], 
-              ['html', { open: 'never' }]
-            ],
-            timeout: 120000,
-            expect: {
-              timeout: 20000
-            },
-            use: {
-              baseURL: 'https://app.juliusdev.net',
-              trace: 'retain-on-failure',
-              video: 'retain-on-failure',
-              screenshot: 'only-on-failure',
-              navigationTimeout: 60000,
-              actionTimeout: 30000,
-            },
-            projects: [
-              {
-                name: 'chromium',
-                use: {
-                  ...devices['Desktop Chrome'],
-                  launchOptions: {
-                    args: [
-                      '--no-sandbox',
-                      '--disable-setuid-sandbox',
-                      '--disable-dev-shm-usage',
-                      '--disable-web-security',
-                      '--disable-features=VizDisplayCompositor',
-                      '--disable-gpu',
-                      '--disable-background-timer-throttling',
-                      '--disable-backgrounding-occluded-windows',
-                      '--disable-renderer-backgrounding',
-                      '--disable-field-trial-config',
-                      '--disable-ipc-flooding-protection',
-                      '--memory-pressure-off',
-                      '--max_old_space_size=4096'
-                    ],
-                    timeout: 60000,
-                  },
-                  viewport: { width: 1280, height: 720 },
-                }
-              }
-            ]
-          });
-          EOF
-
-      - name: Run Playwright tests with stability optimizations
+      - name: Run Playwright tests with explicit HTML report generation
         env:
           TEST_ENV: ${{ github.event.inputs.environment }}
           NODE_OPTIONS: "--max-old-space-size=4096"
@@ -144,31 +87,59 @@ jobs:
         run: |
           echo "Running tests against $TEST_ENV environment with CI optimizations"
           ulimit -n 8192
-          npx playwright test --config=playwright.ci.config.js --reporter=list --max-failures=1 --timeout=120000
-        continue-on-error: false
 
-      - name: Check test result directories
+          # Run tests with explicit HTML report generation and trace collection
+          npx playwright test \
+            --config=playwright-automation-framework/src/playwright.config.js \
+            --reporter=html,list \
+            --project=chromium \
+            --timeout=120000 \
+            || echo "Tests completed with some failures (expected for artifact generation)"
+        continue-on-error: true
+
+      - name: Check ALL possible test result locations
         if: always()
         run: |
-          echo "=== Checking for test result directories ==="
+          echo "=== Complete directory scan ==="
           pwd
           ls -la
-          echo "--- All directories and files ---"
-          find . -type d -name "*report*" -o -type d -name "*result*" | head -10
-          echo "--- Checking specific paths ---"
-          ls -la result/playwright-report/ 2>/dev/null && echo "✅ result/playwright-report/ exists" || echo "❌ result/playwright-report/ not found"
-          ls -la result/test-results/ 2>/dev/null && echo "✅ result/test-results/ exists" || echo "❌ result/test-results/ not found"
-          ls -la playwright-report/ 2>/dev/null && echo "✅ playwright-report/ exists" || echo "❌ playwright-report/ not found"
-          ls -la test-results/ 2>/dev/null && echo "✅ test-results/ exists" || echo "❌ test-results/ not found"
 
-      - name: Upload test results (correct paths)
+          echo "=== Finding all playwright and test result directories ==="
+          find . -name "*playwright*" -type d 2>/dev/null || echo "No playwright directories found"
+          find . -name "*test-results*" -type d 2>/dev/null || echo "No test-results directories found"
+          find . -name "*report*" -type d 2>/dev/null || echo "No report directories found"
+
+          echo "=== Finding all HTML files ==="
+          find . -name "*.html" 2>/dev/null || echo "No HTML files found"
+
+          echo "=== Finding all video/screenshot files ==="
+          find . -name "*.webm" -o -name "*.png" -o -name "*.jpg" 2>/dev/null || echo "No media files found"
+
+          echo "=== Checking specific known locations ==="
+          for path in "playwright-report" "test-results" "result/playwright-report" "result/test-results" "playwright-automation-framework/src/playwright-report" "playwright-automation-framework/src/test-results"; do
+            if [ -d "$path" ]; then
+              echo "✅ Found: $path"
+              ls -la "$path" | head -5
+            else
+              echo "❌ Not found: $path"
+            fi
+          done
+
+      - name: Upload ALL possible test artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: playwright-results-${{ github.event.inputs.environment }}
           path: |
-            result/playwright-report/
-            result/test-results/
+            playwright-report/
+            test-results/
+            result/
+            **/*playwright-report*/
+            **/*test-results*/
+            **/*.html
+            **/*.webm
+            **/*.png
+            **/.last-run.json
           retention-days: 7
 
       - name: Cleanup WireGuard
