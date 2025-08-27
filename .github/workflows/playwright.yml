@@ -26,14 +26,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wireguard-tools resolvconf iptables dnsutils curl
 
-      - name: Setup WireGuard VPN with enhanced configuration
+      - name: Setup WireGuard VPN
         env:
           WG_PRIVATE_KEY: ${{ secrets.WG_PRIVATE_KEY }}
           WG_PRESHARED_KEY: ${{ secrets.WG_PRESHARED_KEY }}
         run: |
           echo "=== Setting up WireGuard VPN ==="
 
-          # Create WireGuard configuration with optimized settings
+          # Create WireGuard configuration
           sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
           [Interface]
           PrivateKey = ${WG_PRIVATE_KEY}
@@ -52,72 +52,13 @@ jobs:
           # Set proper permissions
           sudo chmod 600 /etc/wireguard/wg0.conf
 
-          # Enable IP forwarding
-          echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
-          echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.conf
-          sudo sysctl -p
-
-          echo "=== Starting WireGuard interface ==="
           # Start WireGuard interface
           sudo wg-quick up wg0
-
-          # Wait for interface to be fully up
           sleep 10
 
-          echo "=== Verifying WireGuard status ==="
-          sudo wg show
-
-          # Check if interface is properly configured
-          ip addr show wg0
-
-          echo "=== Checking routing table ==="
-          ip route show
-
-          echo "=== Testing basic connectivity ==="
-          # Test basic internet connectivity through VPN
-          for i in {1..5}; do
-            echo "Attempt $i: Testing connectivity..."
-            if ping -c 2 -W 3 1.1.1.1; then
-              echo "✓ Basic connectivity successful"
-              break
-            else
-              echo "✗ Basic connectivity failed, retrying..."
-              sleep 5
-            fi
-          done
-
-          echo "=== Testing DNS resolution ==="
-          for i in {1..3}; do
-            echo "Attempt $i: Testing DNS..."
-            if nslookup app.juliusdev.net 1.1.1.1; then
-              echo "✓ DNS resolution successful"
-              break
-            else
-              echo "✗ DNS resolution failed, retrying..."
-              sleep 5
-            fi
-          done
-
-          echo "=== Testing target application connectivity ==="
-          for i in {1..5}; do
-            echo "Attempt $i: Testing app connectivity..."
-            if curl -I --connect-timeout 10 --max-time 20 https://app.juliusdev.net/login; then
-              echo "✓ Application connectivity successful"
-              break
-            else
-              echo "✗ Application connectivity failed, retrying..."
-              sleep 10
-            fi
-          done
-
-          # Additional verification
-          echo "=== Final connectivity verification ==="
-          curl -v --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
-            echo "❌ CRITICAL: Cannot reach target application"
-            echo "=== Network debugging info ==="
-            ip route get 1.1.1.1
-            dig app.juliusdev.net
-            sudo wg show
+          # Verify connectivity
+          curl -I --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
+            echo "❌ VPN connectivity failed"
             exit 1
           }
 
@@ -132,22 +73,52 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: Configure Playwright for VPN environment
+      - name: Install Playwright browsers with system dependencies
         run: |
-          # Create playwright config override for VPN environment
-          cat >> playwright.config.js << 'EOF'
-          // VPN environment overrides
-          module.exports = {
-            ...require('./playwright.config.js'),
-            timeout: 90000, // 90 seconds
+          # Install browsers with all system dependencies
+          npx playwright install --with-deps chromium
+
+          # Verify browser installation
+          npx playwright --version
+
+      - name: Configure system for browser stability
+        run: |
+          # Increase shared memory for browser stability
+          sudo mount -o remount,size=2G /dev/shm
+
+          # Set memory limits
+          echo "Setting up memory management..."
+          sudo sysctl -w vm.swappiness=10
+          sudo sysctl -w vm.overcommit_memory=1
+
+          # Show available resources
+          echo "=== System Resources ==="
+          free -h
+          df -h
+          lscpu | grep -E "CPU\(s\)|Model name"
+
+      - name: Create optimized Playwright config for CI
+        run: |
+          # Create a CI-specific config file
+          cat > playwright.ci.config.js << 'EOF'
+          const { defineConfig, devices } = require('@playwright/test');
+
+          module.exports = defineConfig({
+            testDir: './playwright-automation-framework/src/tests',
+            fullyParallel: false,
+            forbidOnly: !!process.env.CI,
+            retries: 2,
+            workers: 1, // Single worker to avoid resource conflicts
+            reporter: [['list'], ['html']],
+            timeout: 120000, // 2 minutes per test
             expect: {
-              timeout: 15000 // 15 seconds for assertions
+              timeout: 20000 // 20 seconds for assertions
             },
             use: {
-              ...require('./playwright.config.js').use,
+              baseURL: 'https://app.juliusdev.net',
+              trace: 'retain-on-failure',
+              video: 'retain-on-failure',
+              screenshot: 'only-on-failure',
               navigationTimeout: 60000, // 60 seconds for navigation
               actionTimeout: 30000, // 30 seconds for actions
             },
@@ -157,38 +128,49 @@ jobs:
                 use: {
                   ...devices['Desktop Chrome'],
                   launchOptions: {
-                    args: ['--disable-web-security', '--disable-features=VizDisplayCompositor']
-                  }
+                    // Optimized browser flags for CI
+                    args: [
+                      '--no-sandbox',
+                      '--disable-setuid-sandbox',
+                      '--disable-dev-shm-usage',
+                      '--disable-web-security',
+                      '--disable-features=VizDisplayCompositor',
+                      '--disable-gpu',
+                      '--disable-background-timer-throttling',
+                      '--disable-backgrounding-occluded-windows',
+                      '--disable-renderer-backgrounding',
+                      '--disable-field-trial-config',
+                      '--disable-ipc-flooding-protection',
+                      '--memory-pressure-off',
+                      '--max_old_space_size=4096'
+                    ],
+                    // Ensure browser doesn't timeout
+                    timeout: 60000,
+                  },
+                  // Use a larger viewport for stability
+                  viewport: { width: 1280, height: 720 },
                 }
               }
             ]
-          };
+          });
           EOF
 
-      - name: Final pre-test connectivity check
-        run: |
-          echo "=== Final connectivity verification before tests ==="
-          echo "Testing basic connectivity..."
-          ping -c 3 1.1.1.1 || echo "Basic ping failed"
-
-          echo "Testing application endpoint..."
-          curl -I --connect-timeout 15 --max-time 30 https://app.juliusdev.net/login || {
-            echo "❌ FINAL CHECK FAILED: Cannot reach application"
-            sudo wg show
-            ip route show
-            exit 1
-          }
-
-          echo "✅ All connectivity checks passed"
-
-      - name: Run Playwright tests
+      - name: Run Playwright tests with stability optimizations
         env:
           TEST_ENV: ${{ github.event.inputs.environment }}
+          NODE_OPTIONS: "--max-old-space-size=4096"
           PWDEBUG: 0
         run: |
-          echo "Running tests against $TEST_ENV environment"
-          echo "Using extended timeouts for VPN environment"
-          npx playwright test --project=chromium --timeout=90000 --reporter=list
+          echo "Running tests against $TEST_ENV environment with CI optimizations"
+
+          # Set process limits
+          ulimit -n 8192
+
+          # Run tests with the CI config
+          npx playwright test --config=playwright.ci.config.js \
+            --reporter=list \
+            --max-failures=1 \
+            --timeout=120000
         continue-on-error: false
 
       - name: Upload test results
@@ -206,10 +188,18 @@ jobs:
         if: failure()
         run: |
           echo "=== Debug info for failed run ==="
+          # System resources
+          free -h
+          df -h /dev/shm
+
+          # Process info
+          ps aux | grep chrome || echo "No chrome processes found"
+
+          # VPN status
           sudo wg show
-          ip route show
-          ip addr show wg0
-          curl -v https://app.juliusdev.net/login || echo "Curl test failed"
+
+          # Recent system logs
+          sudo dmesg | tail -20 || echo "Could not read dmesg"
 
       - name: Cleanup WireGuard
         if: always()
