@@ -10,8 +10,7 @@ on:
         type: choice
         options:
           - stag
-          - prod
-          - dev
+          #- preview
 
 jobs:
   playwright-tests:
