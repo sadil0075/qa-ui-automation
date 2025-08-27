@@ -1,0 +1,6 @@
+{
+  "filter": {
+    "reachMin": 500,
+    "engagementMin": 500
+  }
+}

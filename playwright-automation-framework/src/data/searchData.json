@@ -1,0 +1,7 @@
+{
+  "searchQueries": {
+    "influencerName": "Selena Gomez",
+    "expectedResultType": "Influencer",
+    "expectedHref": "https://app.juliusdev.net/selena-gomez"
+  }
+}
